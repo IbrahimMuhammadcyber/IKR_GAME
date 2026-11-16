@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c1d24"/><stop offset="1" stop-color="#070709"/></linearGradient></defs>
+  <rect width="512" height="512" rx="96" fill="url(#g)"/>
+  <rect x="64" y="64" width="384" height="22" fill="#0a8a4b"/><rect x="64" y="86" width="384" height="22" fill="#fff"/><rect x="64" y="108" width="384" height="22" fill="#0a8a4b"/>
+  <g transform="skewX(-8)" font-family="Impact, Arial Black, sans-serif" font-style="italic" text-anchor="middle">
+    <text x="290" y="290" font-size="130" fill="#e11d2e">NBR</text>
+    <text x="290" y="420" font-size="150" fill="#fff">3D</text>
+  </g>
+</svg>
