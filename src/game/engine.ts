@@ -585,7 +585,7 @@ export class Engine {
   private hideTraffic() { this.veh.forEach((v) => { v.active = false; v.mesh.visible = false; }); }
 
   // ---- environment --------------------------------------------------------
-private setEnv(id: EnvId) {
+  private setEnv(id: EnvId) {
     if (this.envId === id) return;
     // tear down
     for (const s of this.segs) this.scene.remove(s.group);
@@ -942,7 +942,7 @@ private setEnv(id: EnvId) {
   }
 
   // ---- race flow ----------------------------------------------------------
-private toast(text: string, kind: Toast['kind']) { this.events.onToast({ text, kind }); }
+  private toast(text: string, kind: Toast['kind']) { this.events.onToast({ text, kind }); }
 
   private progress(): number {
     const m = this.cfg?.mission;

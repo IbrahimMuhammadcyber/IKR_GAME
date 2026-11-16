@@ -352,65 +352,6 @@ export function buildProp(name: string): PropGeo {
       return mesh([P(G.cyl, 0xb5683a, [0, 6, 0], [11, 12, 9]), P(G.cyl, 0xc47a45, [0, 12.5, 0], [10, 1.2, 8])]);
     case 'peak':
       return mesh([P(G.cone, 0x6f7f8c, [0, 22, 0], [26, 44, 26]), P(G.cone, 0xf4f7fa, [0, 41, 0], [9, 10, 9])]);
-      function buildingGeo(w: number, h: number, d: number, tint: number): THREE.BufferGeometry {
-  const g = new THREE.BoxGeometry(w, h, d);
-  g.translate(0, h / 2, 0);
-  const uv = g.attributes.uv as THREE.BufferAttribute;
-  const tile = 12; // metres per window texture tile
-  // BoxGeometry face order: +x, -x, +y, -y, +z, -z (4 vertices each)
-  const faces: [number, number][] = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
-  for (let f = 0; f < 6; f++) {
-    for (let i = 0; i < 4; i++) {
-      const k = f * 4 + i;
-      uv.setXY(k, (uv.getX(k) * faces[f][0]) / tile, (uv.getY(k) * faces[f][1]) / tile);
-    }
-  }
-  const col = new Float32Array(g.attributes.position.count * 3);
-  const c = new THREE.Color(tint);
-  for (let i = 0; i < col.length; i += 3) { col[i] = c.r; col[i + 1] = c.g; col[i + 2] = c.b; }
-  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  g.computeBoundingSphere();
-  g.computeBoundingBox();
-  return g;
-}
-
-export type PropKind = 'mesh' | 'bldg';
-export interface PropGeo { geo: THREE.BufferGeometry; kind: PropKind }
-
-export function buildProp(name: string): PropGeo {
-  const mesh = (parts: Part[]): PropGeo => ({ geo: mk(parts), kind: 'mesh' });
-  switch (name) {
-    case 'acacia':
-      return mesh([P(G.cyl, 0x6b4a2b, [0, 1.6, 0], [0.16, 3.2, 0.16]), P(G.sph, 0x4f7a2a, [0, 3.7, 0], [3.1, 0.85, 3.1]), P(G.sph, 0x5c8a31, [0.6, 4.1, 0.3], [1.9, 0.6, 1.9])]);
-    case 'acaciaDry':
-      return mesh([P(G.cyl, 0x6b5233, [0, 1.5, 0], [0.15, 3.0, 0.15]), P(G.sph, 0x8a8a3a, [0, 3.4, 0], [2.8, 0.7, 2.8])]);
-    case 'palm': {
-      const parts: Part[] = [P(G.cyl, 0x8a6a45, [0, 3, 0], [0.18, 6, 0.18], [0.04, 0, 0.04])];
-      for (let k = 0; k < 7; k++) parts.push(P(G.box, k % 2 ? 0x2f8f3a : 0x3aa046, [Math.cos((k * Math.PI * 2) / 7) * 1.1, 6.1, Math.sin((k * Math.PI * 2) / 7) * 1.1], [0.35, 0.05, 2.4], [-0.45, (-k * Math.PI * 2) / 7 + Math.PI / 2, 0]));
-      return mesh(parts);
-    }
-    case 'baobab':
-      return mesh([P(G.cyl, 0x7a6a58, [0, 2.4, 0], [1.0, 4.8, 1.0]), P(G.cyl, 0x7a6a58, [-1.3, 5.0, 0], [0.32, 2.4, 0.32], [0, 0, 0.9]), P(G.cyl, 0x7a6a58, [1.3, 5.0, 0], [0.32, 2.4, 0.32], [0, 0, -0.9]), P(G.sph, 0x4d7a2e, [0, 6.0, 0], [3.2, 0.9, 3.2]), P(G.sph, 0x4d7a2e, [-2.1, 6.0, 0.5], [1.6, 0.6, 1.6]), P(G.sph, 0x5a8a35, [2.1, 6.0, -0.4], [1.6, 0.6, 1.6])]);
-    case 'mango':
-      return mesh([P(G.cyl, 0x5c4228, [0, 1.2, 0], [0.22, 2.4, 0.22]), P(G.sph, 0x2f6a2a, [0, 3.2, 0], [2.0, 1.6, 2.0])]);
-    case 'pine':
-      return mesh([P(G.cyl, 0x5a3f27, [0, 0.8, 0], [0.2, 1.6, 0.2]), P(G.cone, 0x1f5a32, [0, 2.6, 0], [1.8, 2.6, 1.8]), P(G.cone, 0x24683a, [0, 4.2, 0], [1.4, 2.4, 1.4]), P(G.cone, 0x2b7a44, [0, 5.6, 0], [0.9, 2.0, 0.9])]);
-    case 'bush':
-      return mesh([P(G.sph, 0x3f7f35, [0, 0.45, 0], [1.0, 0.7, 1.0]), P(G.sph, 0x4a8d3b, [0.7, 0.35, 0.3], [0.7, 0.5, 0.7])]);
-    case 'shrub':
-      return mesh([P(G.sph, 0x9a8a55, [0, 0.35, 0], [0.9, 0.5, 0.9]), P(G.sph, 0xa89a62, [0.6, 0.25, 0.2], [0.6, 0.4, 0.6])]);
-    case 'cactus':
-      return mesh([P(G.cyl, 0x3f7a3a, [0, 1.2, 0], [0.26, 2.4, 0.26]), P(G.cyl, 0x3f7a3a, [-0.55, 1.5, 0], [0.16, 0.9, 0.16]), P(G.box, 0x3f7a3a, [-0.35, 1.05, 0], [0.5, 0.2, 0.2]), P(G.cyl, 0x3f7a3a, [0.55, 1.9, 0], [0.16, 0.8, 0.16]), P(G.box, 0x3f7a3a, [0.35, 1.5, 0], [0.5, 0.2, 0.2])]);
-    case 'rock':
-      return mesh([P(G.ico, 0x7a7770, [0, 0.5, 0], [1.4, 0.9, 1.1]), P(G.ico, 0x8a867e, [1.2, 0.3, 0.4], [0.8, 0.55, 0.7])]);
-    case 'boulder':
-      return mesh([P(G.ico, 0x6c6a66, [0, 1.6, 0], [3.2, 2.6, 2.8]), P(G.ico, 0x7c7a75, [2.8, 0.9, 1], [1.7, 1.4, 1.5])]);
-    case 'dune':
-      return mesh([P(G.sph, 0xd9b36a, [0, 0, 0], [16, 4.5, 11]), P(G.sph, 0xcfa75d, [10, -0.5, 4], [10, 3, 7])]);
-    case 'mesa':
-      return mesh([P(G.cyl, 0xb5683a, [0, 6, 0], [11, 12, 9]), P(G.cyl, 0xc47a45, [0, 12.5, 0], [10, 1.2, 8])]);
-    case 'peak':
-      return mesh([P(G.cone, 0x6f7f8c, [0, 22, 0], [26, 44, 26]), P(G.cone, 0xf4f7fa, [0, 41, 0], [9, 10, 9])]);
     case 'hill':
       return mesh([P(G.sph, 0x4f8a45, [0, 0, 0], [28, 9, 20]), P(G.sph, 0x5a9a4c, [14, -1, 8], [16, 6, 12])]);
     case 'hut':
@@ -526,4 +467,4 @@ export function windowTextures(night: boolean): { map: THREE.CanvasTexture; emis
     return t;
   };
   return { map: mkTex(a), emissive: mkTex(b) };
-                                     }
+}

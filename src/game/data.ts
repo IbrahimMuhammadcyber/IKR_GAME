@@ -273,4 +273,4 @@ export function computeStats(b: BikeDef, u: UpgLevels): BikeStats {
     nitro: b.nitro * (1 + 0.1 * u.nitro),
     hand: Math.min(1.1, b.handling * (1 + 0.05 * u.handling)),
   };
-  }
+}
