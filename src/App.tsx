@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Engine } from './game/engine';
 import { audio } from './game/audio';
 import {
-  ACHIEVEMENTS, BIKES, CAREER, CHALLENGES, ENVS, MAX_UPG, MODE_NAMES, UPGRADES, UPGRADE_KEYS, bikeById, computeStats, dailyLabel,
-  envInfo, levelFromXp, objectiveText, upgradeCost, xpForLevel,
+  ACHIEVEMENTS, BIKES, CAREER, CHALLENGES, ENVS, MAX_UPG, MODE_NAMES, PAINTS, UPGRADES, UPGRADE_KEYS, bikeById, computeStats, dailyLabel,
+  envInfo, levelFromXp, paintedBike, objectiveText, upgradeCost, xpForLevel,
   type BikeDef, type Category, type EnvId, type Mission, type ModeId, type Settings, type UpgradeKey,
 } from './game/data';
 import { LANGS, tr, type TKey } from './game/i18n';
 import {
-  bestOverall, buyBike, buyUpgrade, careerDone, careerUnlocked, challengeDone, claimDaily, dailyClaimable, finalizeRace,
-  selectBike, store, storageOk, upgradesFor, type RaceSummary,
+  bestOverall, buyBike, buyPaint, buyUpgrade, careerDone, careerUnlocked, challengeDone, claimDaily, dailyClaimable, finalizeRace,
+  paintFor, selectBike, setPaint, store, storageOk, upgradesFor, type RaceSummary,
 } from './game/save';
 import type { Hud, RaceConfig, RaceResult, Toast } from './game/types';
 import { Bar, Btn, Icon, fmtNum, fmtTime, sfxClick, type IconName } from './ui';
@@ -19,6 +19,7 @@ interface Notice { id: number; title: string; sub: string; icon: IconName }
 interface ToastItem extends Toast { id: number }
 interface RaceEnd { res: RaceResult; sum: RaceSummary; cfg: RaceConfig }
 
+const screen_angle = (): number => ((window.screen as unknown as { orientation?: { angle: number } }).orientation?.angle) || 0;
 const CAMERAS = ['Chase', 'Close', 'High', 'Helmet'];
 
 export default function App() {
@@ -80,7 +81,7 @@ export default function App() {
         onVibrate: (ms) => { try { navigator.vibrate?.(ms); } catch { /* unsupported */ } },
       });
       engineRef.current = eng;
-      eng.showBike(bikeById(store.get().selected), 'menu');
+      eng.showBike(paintedBike(bikeById(store.get().selected), paintFor(store.get(), store.get().selected)), 'menu');
     } catch (e) {
       console.error(e);
       setScreen('error');
@@ -109,6 +110,24 @@ export default function App() {
     audio.setVolumes(S.sfx, S.music);
   }, [S]);
 
+  // tilt steering (analog) via device orientation
+  useEffect(() => {
+    const e = engineRef.current;
+    if (!S.tilt || screen !== 'race') { e?.setAnalogSteer(null); return; }
+    const on = (ev: DeviceOrientationEvent) => {
+      const g = ev.gamma, b = ev.beta;
+      if (g == null || b == null) return;
+      const ang = ((screen_angle() % 360) + 360) % 360;
+      let raw = ang === 90 ? b : ang === 270 ? -b : ang === 180 ? -g : g;
+      if (S.tiltInvert) raw = -raw;
+      const dead = 4, full = 28;
+      const v = Math.abs(raw) < dead ? 0 : Math.sign(raw) * Math.min(1, (Math.abs(raw) - dead) / (full - dead));
+      engineRef.current?.setAnalogSteer(v);
+    };
+    window.addEventListener('deviceorientation', on);
+    return () => { window.removeEventListener('deviceorientation', on); engineRef.current?.setAnalogSteer(null); };
+  }, [S.tilt, S.tiltInvert, screen]);
+
   // unlock audio on first interaction
   useEffect(() => {
     const unlock = () => {
@@ -128,9 +147,9 @@ export default function App() {
     const e = engineRef.current;
     if (!e || !ready || screen === 'race' || screen === 'error' || screen === 'loading') return;
     const id = screen === 'garage' || screen === 'upgrades' ? previewId : save.selected;
-    e.showBike(bikeById(id), screen === 'menu' ? 'menu' : 'garage');
+    e.showBike(paintedBike(bikeById(id), save.paint[id]), screen === 'menu' ? 'menu' : 'garage');
     audio.startMusic('menu');
-  }, [screen, previewId, save.selected, ready]);
+  }, [screen, previewId, save.selected, save.paint, ready]);
 
   // auto-pause when tab hidden
   useEffect(() => {
@@ -150,7 +169,7 @@ export default function App() {
     const e = engineRef.current;
     if (!e) return;
     const s = store.get();
-    const bike = bikeById(s.selected);
+    const bike = paintedBike(bikeById(s.selected), s.paint[s.selected]);
     const cfg: RaceConfig = { mode, env: envId, bike, upg: upgradesFor(s, bike.id), mission };
     cfgRef.current = cfg;
     setEnd(null);
@@ -158,6 +177,11 @@ export default function App() {
     setHud(null);
     setToasts([]);
     audio.unlock();
+    try {
+      const DO = (window as unknown as { DeviceOrientationEvent?: { requestPermission?: () => Promise<string> } }).DeviceOrientationEvent;
+      if (store.get().settings.tilt && DO?.requestPermission) void DO.requestPermission().catch(() => {});
+    } catch { /* ignore */ }
+    if (mode === 'race' && envId !== 'circuit') cfg.env = 'circuit';
     e.startRace(cfg);
     setScreen('race');
   }, []);
@@ -251,6 +275,8 @@ export default function App() {
             <Btn big kind="primary" icon="car" onClick={() => begin('traffic', env)}>{t('traffic')}</Btn>
             <Btn big icon="timer" onClick={() => begin('trial', env)}>{t('trial')}</Btn>
             <Btn big icon="road" onClick={() => begin('free', env)}>{t('free')}</Btn>
+            <Btn big icon="flag" onClick={() => begin('race', 'circuit')}>{t('race')}</Btn>
+            <Btn big icon="zap" onClick={() => begin('police', env)}>{t('police')}</Btn>
             <Btn big icon="flag" onClick={() => go('career')}>{t('career')}</Btn>
             <Btn big icon="target" onClick={() => go('challenge')}>{t('challenge')}</Btn>
           </div>
@@ -268,6 +294,14 @@ export default function App() {
 
       {screen === 'garage' && (
         <Garage t={t} save={save} level={level} previewId={previewId} setPreview={setPreviewId} onBack={() => go('menu')}
+          onPaint={(bid, pid) => {
+            if (!save.paints.includes(pid)) {
+              const r = buyPaint(pid);
+              if (!r.ok) { audio.sfx('nope'); notify('Cannot buy paint', r.reason || '', 'lock'); return; }
+              audio.sfx('buy');
+            }
+            sfxClick(); setPaint(bid, pid);
+          }}
           onUnlock={(id) => {
             const r = buyBike(id);
             if (!r.ok) { audio.sfx('nope'); notify('Cannot unlock', r.reason || '', 'lock'); return; }
@@ -429,6 +463,7 @@ function MissionList({ title, list, onBack, unlocked, done, onStart, save, level
     </Page>
   );
 }
+
 function StatBars({ bike, upg }: { bike: BikeDef; upg: ReturnType<typeof upgradesFor> }) {
   const base = computeStats(bike, { engine: 0, speed: 0, accel: 0, brakes: 0, handling: 0, nitro: 0 });
   const cur = computeStats(bike, upg);
@@ -446,9 +481,9 @@ function StatBars({ bike, upg }: { bike: BikeDef; upg: ReturnType<typeof upgrade
   );
 }
 
-function Garage({ t, save, level, previewId, setPreview, onBack, onUnlock, onSelect, onUpgrade }: {
+function Garage({ t, save, level, previewId, setPreview, onBack, onUnlock, onSelect, onUpgrade, onPaint }: {
   t: (k: TKey) => string; save: ReturnType<typeof store.get>; level: number; previewId: string; setPreview: (id: string) => void; onBack: () => void;
-  onUnlock: (id: string) => void; onSelect: (id: string) => void; onUpgrade: () => void;
+  onUnlock: (id: string) => void; onSelect: (id: string) => void; onUpgrade: () => void; onPaint: (bikeId: string, paintId: string) => void;
 }) {
   const [cat, setCat] = useState<Category | 'All'>('All');
   const list = BIKES.filter((b) => cat === 'All' || b.cat === cat);
@@ -481,6 +516,21 @@ function Garage({ t, save, level, previewId, setPreview, onBack, onUnlock, onSel
             {!own && save.coins < cur.price && <small className="need">Need {fmtNum(cur.price - save.coins)} more coins</small>}
           </div>
         </div>
+        {own && (
+          <div className="paints" aria-label={t('paint')}>
+            <small>{t('paint')}</small>
+            {PAINTS.map((p) => {
+              const has = save.paints.includes(p.id);
+              const on = (save.paint[cur.id] || 'stock') === p.id;
+              return (
+                <button key={p.id} type="button" className={`pswatch ${on ? 'on' : ''} ${has ? '' : 'locked'}`} title={`${p.name}${has ? '' : ' · ' + p.price}`}
+                  style={{ ['--c' as string]: p.color || cur.color }} onClick={() => onPaint(cur.id, p.id)}>
+                  {!has && <em>{fmtNum(p.price)}</em>}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="bike-strip">
           {list.map((b) => (
             <button key={b.id} type="button" className={`bike-card ${b.id === cur.id ? 'on' : ''} ${save.owned.includes(b.id) ? '' : 'locked'}`}
@@ -535,6 +585,7 @@ function Upgrades({ t, save, level, previewId, setPreview, onBack, onBuy }: {
     </Page>
   );
 }
+
 function Achievements({ t, save, level, onBack, onClaim }: { t: (k: TKey) => string; save: ReturnType<typeof store.get>; level: number; onBack: () => void; onClaim: (i: number) => void }) {
   const [tab, setTab] = useState<'daily' | 'ach'>('daily');
   const ctx = { stats: save.stats, level, owned: save.owned.length, career: save.career.length, challenges: save.challenges.length };
@@ -635,6 +686,9 @@ function SettingsScreen({ t, save, level, onBack, upd }: { t: (k: TKey) => strin
         <Slider label="Field of view" value={S.fov} min={50} max={80} step={1} onChange={(v) => upd({ fov: v })} fmt={(v) => v + '°'} />
         <Seg label="Camera shake" value={S.shake ? 'on' : 'off'} opts={[{ v: 'on', l: 'On' }, { v: 'off', l: 'Off' }]} onChange={(v) => upd({ shake: v === 'on' })} />
         <Seg label="Auto throttle" value={S.autoThrottle ? 'on' : 'off'} opts={[{ v: 'on', l: 'On' }, { v: 'off', l: 'Off' }]} onChange={(v) => upd({ autoThrottle: v === 'on' })} />
+        <Seg label="Tilt steering" value={S.tilt ? 'on' : 'off'} opts={[{ v: 'on', l: 'On' }, { v: 'off', l: 'Off' }]} onChange={(v) => upd({ tilt: v === 'on' })} />
+        {S.tilt && <Seg label="Invert tilt" value={S.tiltInvert ? 'on' : 'off'} opts={[{ v: 'on', l: 'On' }, { v: 'off', l: 'Off' }]} onChange={(v) => upd({ tiltInvert: v === 'on' })} />}
+        <Seg label="Weather" value={S.weather} opts={[{ v: 'auto', l: 'Auto' }, { v: 'clear', l: 'Clear' }, { v: 'rain', l: 'Rain' }]} onChange={(v) => upd({ weather: v })} />
         <Seg label="Vibration" value={S.vibrate ? 'on' : 'off'} opts={[{ v: 'on', l: 'On' }, { v: 'off', l: 'Off' }]} onChange={(v) => upd({ vibrate: v === 'on' })} />
         <Seg label={t('language')} value={S.lang} opts={LANGS.map((l) => ({ v: l.id, l: l.label }))} onChange={(v) => upd({ lang: v })} />
         <label className="field"><span>{t('name')}</span><input value={save.name} maxLength={14} onChange={(e) => store.update((s) => ({ ...s, name: e.target.value.slice(0, 14) || 'Rider' }))} /></label>
@@ -656,6 +710,7 @@ function SettingsScreen({ t, save, level, onBack, upd }: { t: (k: TKey) => strin
     </Page>
   );
 }
+
 // ---------------------------------------------------------------------------
 // Race UI
 // ---------------------------------------------------------------------------
@@ -727,6 +782,9 @@ function RaceUI({ hud, toasts, paused, end, S, t, press, onPause, onRestart, onC
         <button type="button" className="rbtn" onClick={() => { sfxClick(); onPause(); }} aria-label="Pause"><Icon n="pause" size={20} /></button>
       </div>
 
+      {hud.lap > 0 && <div className="raceinfo"><b>P{hud.pos}<small>/{hud.field}</small></b><span>LAP {hud.lap}/{hud.laps}</span></div>}
+      {hud.police > 0 && <><div className="copvig" /><div className="copbadge">POLICE {hud.gap > 0 ? `${hud.gap} m` : ''}</div></>}
+      {hud.weather === 'rain' && <div className="wxchip">Rain</div>}
       <div className="toasts">{toasts.map((x) => <div key={x.id} className={`toast ${x.kind}`}>{x.text}</div>)}</div>
       {hud.countdown >= 0 && !end && <div className="countdown" key={hud.countdown}>{hud.countdown === 0 ? 'GO!' : hud.countdown}</div>}
       {hud.respawning && <div className="respawn">Back on the road</div>}
@@ -768,6 +826,8 @@ function Results({ end, t, onRetry, onMenu, onUpg, onNext }: { end: RaceEnd; t: 
   if (m) title = res.success ? t('complete') : t('failed');
   else if (res.reason === 'timeup') title = "Time's up!";
   else if (res.reason === 'quit') title = 'Race finished';
+  else if (res.reason === 'busted') title = 'BUSTED!';
+  else if (res.reason === 'finished') title = res.position === 1 ? 'You won the Grand Prix!' : `Finished P${res.position}`;
   const total = sum.coinsPicked + sum.coinsBonus + sum.missionReward;
   const nextIdx = cfg.mode === 'career' && m && res.success ? CAREER.findIndex((x) => x.id === m.id) + 1 : -1;
   const next = nextIdx > 0 && nextIdx < CAREER.length ? CAREER[nextIdx] : null;
@@ -784,6 +844,8 @@ function Results({ end, t, onRetry, onMenu, onUpg, onNext }: { end: RaceEnd; t: 
           <div><small>Top speed</small><b>{res.topSpeed} km/h</b></div>
           <div><small>Overtakes</small><b>{res.overtakes}</b></div>
           <div><small>Near misses</small><b>{res.nearMisses}</b></div>
+          {res.position ? <div><small>Position</small><b>P{res.position}/{res.field}</b></div> : null}
+          {cfg.mode === 'police' ? <div><small>Police evaded</small><b>{res.evades || 0}</b></div> : null}
           <div><small>Coins picked</small><b>{sum.coinsPicked}</b></div>
           <div><small>{t('time')}</small><b>{fmtTime(res.duration)}</b></div>
         </div>
@@ -800,5 +862,3 @@ function Results({ end, t, onRetry, onMenu, onUpg, onNext }: { end: RaceEnd; t: 
     </div>
   );
 }
-
-           
