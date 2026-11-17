@@ -1,6 +1,5 @@
 name: Build Android APK
 
-# Run it from the Actions tab ("Run workflow"). The APK appears under "Artifacts".
 on:
   workflow_dispatch:
 
@@ -16,7 +15,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
 
       - run: npm install --no-audit --no-fund
       - run: npm run build
