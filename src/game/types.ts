@@ -8,7 +8,7 @@ export interface RaceConfig {
   mission?: Mission;
 }
 
-export type FinishReason = 'crash' | 'timeup' | 'complete' | 'quit';
+export type FinishReason = 'crash' | 'timeup' | 'complete' | 'quit' | 'busted' | 'finished';
 
 export interface RaceResult {
   mode: ModeId;
@@ -22,6 +22,10 @@ export interface RaceResult {
   nearMisses: number;
   topSpeed: number; // km/h
   duration: number; // seconds
+  bonus?: number; // extra coins (race podium, escapes)
+  position?: number; // Grand Prix finishing position
+  field?: number;
+  evades?: number;
 }
 
 export interface Hud {
@@ -42,6 +46,13 @@ export interface Hud {
   crashed: boolean;
   camera: number;
   respawning: boolean;
+  lap: number;
+  laps: number;
+  pos: number;
+  field: number;
+  police: number;
+  gap: number; // metres to nearest police car (0 = none)
+  weather: 'clear' | 'rain';
 }
 
 export interface Toast { text: string; kind: 'good' | 'info' | 'warn' | 'coin' }

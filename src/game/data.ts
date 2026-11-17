@@ -5,7 +5,8 @@ export type Lang = 'en' | 'ha' | 'yo' | 'ig' | 'pcm';
 export type UpgradeKey = 'engine' | 'speed' | 'accel' | 'brakes' | 'handling' | 'nitro';
 export type Category = 'Sport' | 'Super' | 'Street' | 'Racing';
 export type EnvId = 'highway' | 'desert' | 'village' | 'city' | 'mountain' | 'circuit';
-export type ModeId = 'traffic' | 'trial' | 'free' | 'career' | 'challenge';
+export type ModeId = 'traffic' | 'trial' | 'free' | 'career' | 'challenge' | 'police' | 'race';
+export type WeatherSetting = 'auto' | 'clear' | 'rain';
 export type ObjKind = 'distance' | 'overtake' | 'nearmiss' | 'coins' | 'speed' | 'score' | 'survive';
 
 export interface Settings {
@@ -19,6 +20,9 @@ export interface Settings {
   autoThrottle: boolean;
   vibrate: boolean;
   lang: Lang;
+  tilt: boolean;
+  tiltInvert: boolean;
+  weather: WeatherSetting;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -32,6 +36,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autoThrottle: false,
   vibrate: true,
   lang: 'en',
+  tilt: false,
+  tiltInvert: false,
+  weather: 'auto',
 };
 
 export const UPGRADE_KEYS: UpgradeKey[] = ['engine', 'speed', 'accel', 'brakes', 'handling', 'nitro'];
@@ -222,8 +229,10 @@ export interface Stats {
   topSpeed: number; // km/h
   dailyClaimed: number;
   upgradesBought: number;
+  evades: number;
+  podiums: number;
 }
-export const emptyStats = (): Stats => ({ races: 0, distance: 0, overtakes: 0, nearMisses: 0, coinsCollected: 0, topSpeed: 0, dailyClaimed: 0, upgradesBought: 0 });
+export const emptyStats = (): Stats => ({ races: 0, distance: 0, overtakes: 0, nearMisses: 0, coinsCollected: 0, topSpeed: 0, dailyClaimed: 0, upgradesBought: 0, evades: 0, podiums: 0 });
 
 export interface AchCtx { stats: Stats; level: number; owned: number; career: number; challenges: number }
 export interface AchDef { id: string; name: string; desc: string; reward: number; check: (c: AchCtx) => boolean; progress: (c: AchCtx) => [number, number] }
@@ -251,6 +260,8 @@ export const ACHIEVEMENTS: AchDef[] = [
   mk('career12', 'Champion', 'Complete all 12 career missions', 3000, (c) => c.career, 12),
   mk('chal8', 'Challenger', 'Complete all 8 challenges', 2000, (c) => c.challenges, 8),
   mk('daily5', 'Dedicated', 'Claim 5 daily missions', 600, (c) => c.stats.dailyClaimed, 5),
+  mk('evade5', 'Escape Artist', 'Lose the police 5 times', 700, (c) => c.stats.evades, 5),
+  mk('podium3', 'Podium Finisher', 'Finish on the podium 3 times in Grand Prix', 900, (c) => c.stats.podiums, 3),
 ];
 
 export const MODE_NAMES: Record<ModeId, string> = {
@@ -259,6 +270,8 @@ export const MODE_NAMES: Record<ModeId, string> = {
   free: 'Free Ride',
   career: 'Career',
   challenge: 'Challenge',
+  police: 'Police Chase',
+  race: 'Grand Prix',
 };
 
 // ---- Derived bike performance --------------------------------------------
@@ -274,3 +287,24 @@ export function computeStats(b: BikeDef, u: UpgLevels): BikeStats {
     hand: Math.min(1.1, b.handling * (1 + 0.05 * u.handling)),
   };
 }
+
+// ---- Paint shop -----------------------------------------------------------
+export interface Paint { id: string; name: string; color: string | null; price: number }
+export const PAINTS: Paint[] = [
+  { id: 'stock', name: 'Stock', color: null, price: 0 },
+  { id: 'crimson', name: 'Crimson', color: '#d6212e', price: 250 },
+  { id: 'naija', name: 'Naija Green', color: '#0a8a4b', price: 250 },
+  { id: 'cobalt', name: 'Cobalt', color: '#2458d8', price: 250 },
+  { id: 'sun', name: 'Sunburst', color: '#f5b400', price: 250 },
+  { id: 'orange', name: 'Flame', color: '#f06a14', price: 250 },
+  { id: 'violet', name: 'Violet', color: '#7a45e0', price: 300 },
+  { id: 'pink', name: 'Hot Pink', color: '#f0408a', price: 300 },
+  { id: 'white', name: 'Pearl', color: '#eef0f4', price: 300 },
+  { id: 'black', name: 'Matte Black', color: '#17181c', price: 300 },
+  { id: 'gold', name: 'Gold', color: '#d9a62b', price: 600 },
+];
+export const paintById = (id: string): Paint => PAINTS.find((p) => p.id === id) || PAINTS[0];
+export const paintedBike = (b: BikeDef, paintId: string | undefined): BikeDef => {
+  const p = paintById(paintId || 'stock');
+  return p.color ? { ...b, color: p.color } : b;
+};

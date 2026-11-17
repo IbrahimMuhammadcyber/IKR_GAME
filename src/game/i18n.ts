@@ -20,6 +20,7 @@ const en = {
   owned: 'Owned', buy: 'Buy', maxed: 'MAX', claim: 'Claim', claimed: 'Claimed', ride: 'RIDE', brake: 'BRAKE',
   graphics: 'Graphics Quality', sound: 'Sound Volume', music: 'Music Volume', sensitivity: 'Control Sensitivity',
   camera: 'Camera', language: 'Language', reset: 'Reset Game Progress', name: 'Rider Name', level: 'Level',
+  police: 'Police Chase', race: 'Grand Prix', paint: 'Paint Shop',
   mission: 'Mission', complete: 'Mission Complete!', failed: 'Mission Failed', start: 'Start',
 };
 type Dict = typeof en;

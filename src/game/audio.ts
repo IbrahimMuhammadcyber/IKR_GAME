@@ -1,6 +1,6 @@
 // Fully procedural audio (Web Audio). No audio files, so it works 100% offline.
 
-type Sfx = 'click' | 'coin' | 'crash' | 'overtake' | 'near' | 'levelup' | 'success' | 'nope' | 'buy' | 'beep' | 'go' | 'checkpoint';
+type Sfx = 'siren' | 'click' | 'coin' | 'crash' | 'overtake' | 'near' | 'levelup' | 'success' | 'nope' | 'buy' | 'beep' | 'go' | 'checkpoint';
 
 class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -14,6 +14,7 @@ class AudioEngine {
   // engine voice
   private eng: { o1: OscillatorNode; o2: OscillatorNode; filt: BiquadFilterNode; gain: GainNode } | null = null;
   private nitroSrc: { src: AudioBufferSourceNode; gain: GainNode; filt: BiquadFilterNode } | null = null;
+  private rainSrc: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private brakeSrc: { src: AudioBufferSourceNode; gain: GainNode; filt: BiquadFilterNode } | null = null;
 
   // music
@@ -98,6 +99,7 @@ class AudioEngine {
   sfx(name: Sfx) {
     if (!this.ctx) return;
     switch (name) {
+      case 'siren': for (let i = 0; i < 4; i++) this.tone(i % 2 ? 700 : 950, 0.2, 'square', 0.1, i * 0.2); break;
       case 'click': this.tone(660, 0.07, 'square', 0.12); break;
       case 'coin': this.tone(988, 0.08, 'square', 0.1); this.tone(1319, 0.14, 'square', 0.1, 0.07); break;
       case 'overtake': this.tone(520, 0.08, 'triangle', 0.15); this.tone(780, 0.1, 'triangle', 0.15, 0.06); break;
@@ -200,6 +202,32 @@ class AudioEngine {
         setTimeout(() => { try { n.src.stop(); } catch { /* already stopped */ } }, 400);
         this[k] = null;
       }
+    }
+  }
+
+  setRain(on: boolean) {
+    const c = this.ctx;
+    if (!c || !this.noiseBuf) return;
+    if (on && !this.rainSrc) {
+      const src = c.createBufferSource();
+      src.buffer = this.noiseBuf;
+      src.loop = true;
+      const f = c.createBiquadFilter();
+      f.type = 'highpass';
+      f.frequency.value = 2500;
+      const g = c.createGain();
+      g.gain.value = 0;
+      src.connect(f);
+      f.connect(g);
+      g.connect(this.sfxGain);
+      src.start();
+      g.gain.setTargetAtTime(0.06, c.currentTime, 0.3);
+      this.rainSrc = { src, gain: g };
+    } else if (!on && this.rainSrc) {
+      const r = this.rainSrc;
+      this.rainSrc = null;
+      r.gain.gain.setTargetAtTime(0, c.currentTime, 0.2);
+      setTimeout(() => { try { r.src.stop(); } catch { /* stopped */ } }, 800);
     }
   }
 

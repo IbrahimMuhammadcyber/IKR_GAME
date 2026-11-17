@@ -9,11 +9,15 @@ import {
 import { CAREER, computeStats, objectiveText, type BikeDef, type BikeStats, type EnvId, type Settings } from './data';
 import type { FinishReason, Hud, RaceConfig, RaceResult, Toast } from './types';
 
+
 const SEG = 36;
 const BIKE_W = 0.7;
 const BIKE_L = 1.9;
 const NEAR_GAP = 0.7;
 const COIN_VALUE = 2;
+const LAPS = 3;
+const LAP_LEN = 1500;
+const FIELD = 6;
 
 const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
@@ -236,7 +240,7 @@ interface Slot { mesh: THREE.Mesh; side: -1 | 1; base: number }
 interface Seg { group: THREE.Group; slots: Slot[]; lamps: THREE.Mesh[]; barriers: THREE.Mesh[]; gantry: THREE.Mesh | null; s0: number }
 interface Veh {
   mesh: THREE.Mesh; active: boolean; type: string; s: number; x: number; vs: number; l: number; w: number; lane: number;
-  dir: 1 | -1; passed: boolean; near: boolean;
+  dir: 1 | -1; passed: boolean; near: boolean; kind: 'traffic' | 'police' | 'rival'; k: number;
 }
 interface Coin { mesh: THREE.Mesh; active: boolean; s: number; x: number }
 
@@ -329,6 +333,20 @@ export class Engine {
   private disposed = false;
   private finished = false;
   private camOverride: number | null = null;
+  private analog: number | null = null;
+  private weather: 'clear' | 'rain' = 'clear';
+  private wet = 0;
+  private rain!: THREE.LineSegments;
+  private rainPos!: Float32Array;
+  private rainDrop!: Float32Array;
+  private copCd = 0;
+  private copN = 0;
+  private copGap = 0;
+  private evades = 0;
+  private lapNow = 1;
+  private raceBonus = 0;
+  private crashCause: FinishReason = 'crash';
+  private racePos = 0;
 
   constructor(canvas: HTMLCanvasElement, settings: Settings, events: EngineEvents) {
     this.canvas = canvas;
@@ -353,6 +371,19 @@ export class Engine {
     this.sunMesh.renderOrder = -99;
     this.sunMesh.frustumCulled = false;
     this.scene.add(this.sky, this.sunMesh);
+    this.scene.add(this.sunLight.target);
+
+    // rain streaks (camera-relative)
+    const RAIN = 260;
+    this.rainPos = new Float32Array(RAIN * 6);
+    this.rainDrop = new Float32Array(RAIN * 3);
+    for (let i = 0; i < RAIN; i++) { this.rainDrop[i * 3] = rnd(-14, 14); this.rainDrop[i * 3 + 1] = rnd(0, 14); this.rainDrop[i * 3 + 2] = rnd(-40, 6); }
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute('position', new THREE.BufferAttribute(this.rainPos, 3));
+    this.rain = new THREE.LineSegments(rg, new THREE.LineBasicMaterial({ color: 0xb8cde6, transparent: true, opacity: 0.5, fog: false, depthWrite: false }));
+    this.rain.frustumCulled = false;
+    this.rain.visible = false;
+    this.scene.add(this.rain);
 
     // coin geometry: gold disc facing travel direction
     const cg = new THREE.CylinderGeometry(0.45, 0.45, 0.1, 14);
@@ -364,12 +395,13 @@ export class Engine {
     this.coinGeo = cg;
 
     // pools
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 18; i++) {
       const m = new THREE.Mesh(vehicleGeo('car', 0), this.vehMat);
+      m.castShadow = true;
       m.visible = false;
       m.frustumCulled = false;
       this.scene.add(m);
-      this.veh.push({ mesh: m, active: false, type: 'car', s: 0, x: 0, vs: 0, l: 4, w: 1.8, lane: 0, dir: 1, passed: false, near: false });
+      this.veh.push({ mesh: m, active: false, type: 'car', s: 0, x: 0, vs: 0, l: 4, w: 1.8, lane: 0, dir: 1, passed: false, near: false, kind: 'traffic', k: 1 });
     }
     for (let i = 0; i < 28; i++) {
       const m = new THREE.Mesh(cg, this.coinMat);
@@ -429,6 +461,7 @@ export class Engine {
       this.hideTraffic();
       this.coins.forEach((c) => { c.active = false; c.mesh.visible = false; });
     }
+    this.applyWeather(true);
     this.stage.visible = true;
     rig.root.visible = true;
     rig.root.position.set(0, 0.12, 0);
@@ -466,6 +499,7 @@ export class Engine {
     this.phase = 'countdown';
     this.paused = false;
     this.camOverride = null;
+    this.copCd = 10; this.copN = 0; this.copGap = 0; this.evades = 0; this.lapNow = 1; this.raceBonus = 0; this.crashCause = 'crash';
     bendU.value.set(0, 0);
     this.layoutSegments(0);
     this.hideTraffic();
@@ -475,6 +509,7 @@ export class Engine {
     this.camera.clearViewOffset();
     this.camPos.set(this.bike.x, 3.2, 8);
     this.fillTraffic();
+    this.applyWeather();
     audio.startEngine();
     audio.startMusic('race');
     this.resize();
@@ -565,7 +600,86 @@ export class Engine {
     this.fog.far = this.q.draw;
     this.camera.updateProjectionMatrix();
     this.sky.scale.setScalar(this.q.draw * 0.9);
+    const sh = this.settings.quality === 'high';
+    this.renderer.shadowMap.enabled = sh;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.sunLight.castShadow = sh;
+    if (sh) {
+      const c = this.sunLight.shadow.camera;
+      c.left = -14; c.right = 14; c.top = 14; c.bottom = -14; c.near = 1; c.far = 90;
+      c.updateProjectionMatrix();
+      this.sunLight.shadow.mapSize.set(1024, 1024);
+      this.sunLight.shadow.bias = -0.0006;
+    }
+    [this.propMat, this.vehMat, this.coinMat].forEach((m) => { m.needsUpdate = true; });
     this.resize();
+  }
+
+  setAnalogSteer(v: number | null) { this.analog = v; }
+
+  private paintSky(top: THREE.Color, bot: THREE.Color) {
+    const pos = this.sky.geometry.attributes.position as THREE.BufferAttribute;
+    const col = this.sky.geometry.attributes.color as THREE.BufferAttribute;
+    const tmp = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      const t = clamp(pos.getY(i) * 1.6, 0, 1);
+      tmp.copy(bot).lerp(top, Math.pow(t, 0.7));
+      col.setXYZ(i, tmp.r, tmp.g, tmp.b);
+    }
+    col.needsUpdate = true;
+  }
+
+  private applyWeather(forceClear = false) {
+    const v = this.vis;
+    const set = this.settings.weather;
+    const chance = { highway: 0.25, city: 0.3, village: 0.3, mountain: 0.35, desert: 0, circuit: 0.2 }[this.envId || 'highway'];
+    const rainy = !forceClear && (set === 'rain' || (set === 'auto' && Math.random() < chance));
+    this.weather = rainy ? 'rain' : 'clear';
+    this.wet = rainy ? 1 : 0;
+    const draw = this.q.draw;
+    if (rainy) {
+      const gray = new THREE.Color(v.night ? 0x1a2236 : 0x7d8999);
+      const top = new THREE.Color(v.skyTop).lerp(gray, 0.65);
+      const bot = new THREE.Color(v.skyBot).lerp(gray, 0.7);
+      this.paintSky(top, bot);
+      this.fog.color.copy(bot);
+      this.renderer.setClearColor(bot, 1);
+      this.fog.near = draw * 0.05;
+      this.fog.far = draw * 0.7;
+      this.hemi.intensity = v.hemi[2] * 0.8;
+      this.sunLight.intensity = v.sun[1] * 0.5;
+      this.sunMesh.visible = false;
+      this.roadMat?.color.setHex(0x8e949e);
+    } else {
+      this.paintSky(new THREE.Color(v.skyTop), new THREE.Color(v.skyBot));
+      this.fog.color.setHex(v.fog);
+      this.renderer.setClearColor(v.fog, 1);
+      this.fog.near = draw * v.fogNear;
+      this.fog.far = draw;
+      this.hemi.intensity = v.hemi[2];
+      this.sunLight.intensity = v.sun[1];
+      this.sunMesh.visible = true;
+      this.roadMat?.color.setHex(0xffffff);
+    }
+    this.rain.visible = rainy && this.phase !== 'menu';
+    audio.setRain(rainy && this.phase !== 'menu');
+  }
+
+  private updateRain(dt: number) {
+    if (this.weather !== 'rain' || this.phase === 'menu') return;
+    const v = this.bike.v;
+    const p = this.rainPos;
+    const d = this.rainDrop;
+    const n = d.length / 3;
+    for (let i = 0; i < n; i++) {
+      let x = d[i * 3], y = d[i * 3 + 1] - 28 * dt, z = d[i * 3 + 2] + v * dt;
+      if (y < 0 || z > 6) { x = rnd(-14, 14); y = rnd(10, 14); z = rnd(-40, -10); }
+      d[i * 3] = x; d[i * 3 + 1] = y; d[i * 3 + 2] = z;
+      p[i * 6] = x; p[i * 6 + 1] = y; p[i * 6 + 2] = z;
+      p[i * 6 + 3] = x; p[i * 6 + 4] = y + 0.6; p[i * 6 + 5] = z - (0.2 + v * 0.015);
+    }
+    (this.rain.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    this.rain.position.copy(this.camera.position);
   }
 
   private laneX(i: number) { return (i - (this.vis.lanes - 1) / 2) * this.vis.laneW; }
@@ -574,15 +688,17 @@ export class Engine {
   private xLimit() { return this.roadHalf() + this.vis.shoulderW - (this.vis.rail === 'none' ? -2.5 : 0.7); }
 
   private setRig(def: BikeDef) {
-    if (this.rig && this.rigId === def.id) return;
+    const key = def.id + def.color;
+    if (this.rig && this.rigId === key) return;
     if (this.rig) { this.scene.remove(this.rig.root); this.rig.dispose(); }
     this.rig = buildBike(def);
     this.rig.root.rotation.order = 'YXZ';
-    this.rigId = def.id;
+    this.rigId = key;
+    this.rig.parts.forEach((m) => { m.castShadow = true; });
     this.scene.add(this.rig.root);
   }
 
-  private hideTraffic() { this.veh.forEach((v) => { v.active = false; v.mesh.visible = false; }); }
+  private hideTraffic() { this.veh.forEach((v) => { v.active = false; v.mesh.visible = false; v.kind = 'traffic'; }); }
 
   // ---- environment --------------------------------------------------------
   private setEnv(id: EnvId) {
@@ -615,17 +731,7 @@ export class Engine {
     this.sunLight.position.set(-v.sunDir[0] * 10, 12, -v.sunDir[2] * 10);
     (this.sunMesh.material as THREE.MeshBasicMaterial).color.setHex(v.sunColor);
     this.sunMesh.scale.setScalar(this.q.draw * (v.night ? 0.05 : 0.07));
-    const pos = this.sky.geometry.attributes.position as THREE.BufferAttribute;
-    const col = this.sky.geometry.attributes.color as THREE.BufferAttribute;
-    const top = new THREE.Color(v.skyTop);
-    const bot = new THREE.Color(v.skyBot);
-    const tmp = new THREE.Color();
-    for (let i = 0; i < pos.count; i++) {
-      const t = clamp(pos.getY(i) * 1.6, 0, 1);
-      tmp.copy(bot).lerp(top, Math.pow(t, 0.7));
-      col.setXYZ(i, tmp.r, tmp.g, tmp.b);
-    }
-    col.needsUpdate = true;
+    this.paintSky(new THREE.Color(v.skyTop), new THREE.Color(v.skyBot));
 
     // materials
     const road = track(makeRoadTexture(v, this.q.aniso));
@@ -665,6 +771,8 @@ export class Engine {
       const gm = new THREE.Mesh(groundGeo, this.groundMat);
       gm.position.y = -0.06;
       gm.frustumCulled = false;
+      rm.receiveShadow = true;
+      gm.receiveShadow = true;
       g.add(rm, gm);
       const barriers: THREE.Mesh[] = [];
       const lamps: THREE.Mesh[] = [];
@@ -780,6 +888,8 @@ export class Engine {
     switch (c.mode) {
       case 'traffic': return Math.min(1, 0.25 + this.bike.s / 7000);
       case 'trial': return 0.35;
+      case 'police': return Math.min(1, 0.4 + this.bike.s / 9000);
+      case 'race': return 0.5;
       case 'free': return 0.1;
       case 'career': return Math.min(1, 0.3 + 0.05 * Math.max(0, CAREER.findIndex((m) => m.id === c.mission?.id)));
       default: return 0.6;
@@ -787,6 +897,7 @@ export class Engine {
   }
 
   private maxTraffic(): number {
+    if (this.cfg?.mode === 'race') return 0;
     if (this.cfg?.mode === 'free') return Math.min(4, this.q.traffic);
     return Math.min(this.q.traffic, Math.round(5 + this.difficulty() * 9));
   }
@@ -802,7 +913,7 @@ export class Engine {
     let blockedLanes = 0;
     const seen = new Set<number>();
     for (const o of this.veh) {
-      if (!o.active) continue;
+      if (!o.active || o.kind === 'police') continue;
       const ds = Math.abs(o.s - s);
       if (o.lane === lane && ds < (o.l + def.l) / 2 + 24) return false;
       if (ds < 32 && !seen.has(o.lane)) { seen.add(o.lane); blockedLanes++; }
@@ -819,6 +930,7 @@ export class Engine {
     free.vs = spd * dir;
     free.passed = false;
     free.near = false;
+    free.kind = 'traffic';
     free.active = true;
     free.mesh.geometry = vehicleGeo(type, Math.floor(Math.random() * 8));
     free.mesh.rotation.y = dir < 0 ? Math.PI : 0;
@@ -828,6 +940,7 @@ export class Engine {
   }
 
   private fillTraffic() {
+    if (this.cfg?.mode === 'race') { this.placeRivals(); return; }
     const n = this.cfg?.mode === 'free' ? 2 : Math.round(this.maxTraffic() * 0.7);
     let tries = 0;
     let made = 0;
@@ -838,6 +951,89 @@ export class Engine {
     }
   }
 
+  private placeRivals() {
+    const lanes = [0, 1, 3, 2, 0];
+    const rows = [14, 14, 28, 28, 42];
+    const ks = [0.9, 0.93, 0.95, 0.97, 0.99];
+    const def = VEH.racer;
+    for (let i = 0; i < FIELD - 1; i++) {
+      const v = this.veh[i];
+      v.kind = 'rival'; v.type = 'racer'; v.l = def.l; v.w = def.w; v.dir = 1;
+      v.lane = Math.min(lanes[i], this.vis.lanes - 1);
+      v.s = rows[i]; v.x = this.laneX(v.lane); v.vs = 0; v.k = ks[i];
+      v.passed = false; v.near = false; v.active = true;
+      v.mesh.geometry = vehicleGeo('racer', i);
+      v.mesh.rotation.y = 0;
+      v.mesh.position.set(v.x, 0, -v.s);
+      v.mesh.visible = true;
+    }
+  }
+
+  private position(): number {
+    let p = 1;
+    for (const v of this.veh) if (v.active && v.kind === 'rival' && v.s > this.bike.s) p++;
+    return p;
+  }
+
+  private updateRivals(dt: number) {
+    if (this.cfg?.mode !== 'race') return;
+    const b = this.bike;
+    for (const v of this.veh) {
+      if (!v.active || v.kind !== 'rival') continue;
+      const rel = v.s - b.s;
+      let target = this.st.vmax * v.k;
+      if (rel > 110) target *= 0.9;
+      else if (rel < -60) target *= 1.08;
+      v.vs += clamp(target - v.vs, -10 * dt, 7.5 * dt);
+    }
+  }
+
+  private spawnPolice() {
+    const c = this.veh.find((v) => !v.active);
+    if (!c) return;
+    const def = VEH.police;
+    const b = this.bike;
+    c.kind = 'police'; c.type = 'police'; c.l = def.l; c.w = def.w; c.dir = 1; c.lane = 0;
+    c.s = b.s - 110; c.x = clamp(b.x, -this.xLimit(), this.xLimit()); c.vs = Math.max(10, b.v * 0.9);
+    c.passed = false; c.near = false; c.active = true;
+    c.mesh.geometry = vehicleGeo('police', 0);
+    c.mesh.rotation.y = 0;
+    c.mesh.position.set(c.x, 0, -c.s);
+    c.mesh.visible = true;
+    audio.sfx('siren');
+    this.toast('POLICE BEHIND YOU!', 'warn');
+  }
+
+  private updatePolice(dt: number) {
+    if (this.cfg?.mode !== 'police') return;
+    const b = this.bike;
+    const L = Math.min(3, 1 + Math.floor(this.elapsed / 45));
+    let n = 0;
+    let nearest = 0;
+    for (const c of this.veh) {
+      if (!c.active || c.kind !== 'police') continue;
+      n++;
+      const target = b.v < 12 ? 24 : this.st.vmax * Math.min(0.97, 0.8 + 0.05 * L);
+      c.vs += clamp(target - c.vs, -14 * dt, 12 * dt);
+      c.x += clamp(b.x - c.x, -5 * dt, 5 * dt);
+      const gap = b.s - c.s;
+      if (gap > 170) {
+        c.active = false; c.mesh.visible = false; n--;
+        this.evades++; this.score += 500; this.copCd = 5;
+        audio.sfx('success');
+        this.toast('EVADED +500', 'good');
+        continue;
+      }
+      if (-gap > 220) { c.active = false; c.mesh.visible = false; n--; continue; }
+      if (gap > 0 && (nearest === 0 || gap < nearest)) nearest = gap;
+      if (this.invuln <= 0 && gap < (c.l + BIKE_L) / 2 + 0.2 && Math.abs(c.x - b.x) < (c.w + BIKE_W) / 2) { this.startCrash(c, 'busted'); return; }
+    }
+    this.copGap = nearest;
+    this.copN = n;
+    this.copCd -= dt;
+    if (n < L && this.copCd <= 0) { this.spawnPolice(); this.copCd = 8; }
+  }
+
   private updateTraffic(dt: number, collide: boolean) {
     const b = this.bike;
     const draw = this.q.draw;
@@ -845,13 +1041,13 @@ export class Engine {
     for (const v of this.veh) {
       if (!v.active) continue;
       v.s += v.vs * dt;
-      active++;
+      if (v.kind === 'traffic') active++;
     }
     // lane following: a faster vehicle never drives through a slower one ahead of it
     for (const f of this.veh) {
-      if (!f.active) continue;
+      if (!f.active || f.kind === 'police') continue;
       for (const l of this.veh) {
-        if (l === f || !l.active || l.lane !== f.lane || l.dir !== f.dir) continue;
+        if (l === f || !l.active || l.kind === 'police' || l.lane !== f.lane || l.dir !== f.dir) continue;
         const ahead = f.dir === 1 ? l.s - f.s : f.s - l.s;
         if (ahead <= 0) continue;
         const gap = ahead - (l.l + f.l) / 2;
@@ -860,18 +1056,19 @@ export class Engine {
     }
     for (const v of this.veh) {
       if (!v.active) continue;
+      v.mesh.position.set(v.x, 0, -v.s);
+      if (v.kind === 'police') continue;
       const rel = v.s - b.s;
-      // recycle
-      if ((v.dir === 1 && rel < -80) || (v.dir === -1 && rel < -60) || rel > draw * 1.4) {
+      if (v.kind === 'rival') v.mesh.visible = rel < draw * 1.1;
+      else if ((v.dir === 1 && rel < -80) || (v.dir === -1 && rel < -60) || rel > draw * 1.4) {
         v.active = false;
         v.mesh.visible = false;
         continue;
       }
-      v.mesh.position.set(v.x, 0, -v.s);
       if (!collide) continue;
       const behind = v.s + v.l / 2 < b.s - BIKE_L / 2;
       if (behind) {
-        if (v.dir === 1 && !v.passed) {
+        if (v.kind === 'traffic' && v.dir === 1 && !v.passed) {
           v.passed = true;
           this.overtakes++;
           this.score += 100;
@@ -881,12 +1078,12 @@ export class Engine {
         } else v.passed = true;
         continue;
       }
-      if (v.passed) continue;
+      if (v.kind === 'rival') { if (v.s <= b.s) continue; } else if (v.passed) continue;
       const ds = Math.abs(v.s - b.s);
       if (ds < (v.l + BIKE_L) / 2) {
         const gap = Math.abs(v.x - b.x) - (v.w * 0.92 + BIKE_W) / 2;
         if (gap < 0 && this.invuln <= 0) { this.startCrash(v); return; }
-        if (gap >= 0 && gap < NEAR_GAP && !v.near && b.v * 3.6 > 70) {
+        if (gap >= 0 && gap < NEAR_GAP && !v.near && b.v * 3.6 > 70 && v.kind === 'traffic') {
           v.near = true;
           this.nearMisses++;
           this.score += 150;
@@ -960,8 +1157,9 @@ export class Engine {
     return clamp(v / m.target, 0, 1);
   }
 
-  private startCrash(v: Veh) {
+  private startCrash(v: Veh, cause: FinishReason = 'crash') {
     const b = this.bike;
+    this.crashCause = cause;
     this.phase = 'crash';
     this.crashT = 0;
     this.nitroOn = false;
@@ -971,17 +1169,18 @@ export class Engine {
     b.cr = { x: 0, y: 0, z: 0 };
     b.v = Math.max(0, b.v * 0.75 + Math.min(0, v.vs) * 0.0);
     audio.sfx('crash');
-    this.toast('CRASH!', 'warn');
+    this.toast(cause === 'busted' ? 'BUSTED!' : 'CRASH!', 'warn');
     if (this.settings.vibrate && this.events.onVibrate) this.events.onVibrate(220);
   }
 
   private endCrash() {
-    const hard = !this.cfg || this.cfg.mode === 'traffic' || this.cfg.mode === 'career' || this.cfg.mode === 'challenge';
-    if (hard) { this.finish('crash', this.cfg?.mission ? false : null); return; }
+    const m = this.cfg?.mode;
+    const hard = !this.cfg || m === 'traffic' || m === 'career' || m === 'challenge' || m === 'police';
+    if (hard) { this.finish(this.crashCause, this.cfg?.mission ? false : null); return; }
     // soft crash (time trial / free ride): respawn in a clear lane
     if (this.cfg!.mode === 'trial') this.timeLeft = Math.max(0.5, this.timeLeft - 5);
     const b = this.bike;
-    for (const v of this.veh) if (v.active && Math.abs(v.s - b.s) < 45) { v.active = false; v.mesh.visible = false; }
+    for (const v of this.veh) if (v.active && v.kind === 'traffic' && Math.abs(v.s - b.s) < 45) { v.active = false; v.mesh.visible = false; }
     b.x = this.laneX(this.startLane());
     b.y = 0; b.vy = 0; b.vx = 0;
     b.v = Math.min(14, this.st.vmax * 0.2);
@@ -1005,6 +1204,8 @@ export class Engine {
       mode: this.cfg!.mode, env: this.cfg!.env, reason, success,
       score: Math.round(this.score), distance: Math.round(this.bike.s), coins: this.coinsGot,
       overtakes: this.overtakes, nearMisses: this.nearMisses, topSpeed: Math.round(this.topSpeed), duration: Math.round(this.elapsed),
+      bonus: this.raceBonus + this.evades * 100, evades: this.evades,
+      position: this.cfg!.mode === 'race' ? this.racePos : undefined, field: this.cfg!.mode === 'race' ? FIELD : undefined,
     };
     this.events.onFinish(res);
   }
@@ -1024,17 +1225,18 @@ export class Engine {
       const f = b.v / vmax;
       a = st.acc * (wantNitro ? 1.9 : 1) * (1 - f * f * f);
     } else a = -(1.5 + 0.0012 * b.v * b.v);
-    if (braking && b.v > 0) a -= st.brk;
+    if (braking && b.v > 0) a -= st.brk * (1 - 0.2 * this.wet);
     const off = Math.abs(b.x) > this.roadHalf() + 0.3;
     if (off) a -= 3 + b.v * 0.08;
     b.v = Math.max(0, b.v + a * dt);
     if (wantNitro) this.nitro = Math.max(0, this.nitro - dt);
     else this.nitro = Math.min(this.nitroMax, this.nitro + dt * 0.12);
 
-    const target = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+    const dig = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+    const target = this.analog !== null && dig === 0 ? this.analog : dig;
     b.steer += (target - b.steer) * Math.min(1, dt * 9);
     const sf = clamp(b.v / 10, 0, 1) * (1 - 0.3 * clamp(b.v / st.vmax, 0, 1));
-    b.x += b.steer * (5.2 + 5 * st.hand) * this.settings.sensitivity * sf * dt;
+    b.x += b.steer * (5.2 + 5 * st.hand) * this.settings.sensitivity * sf * (1 - 0.15 * this.wet) * dt;
     const lim = this.xLimit();
     if (b.x > lim) { b.x = lim; b.v *= 1 - 0.9 * dt; }
     if (b.x < -lim) { b.x = -lim; b.v *= 1 - 0.9 * dt; }
@@ -1065,8 +1267,23 @@ export class Engine {
       }
     }
 
+    this.updateRivals(dt);
     this.updateTraffic(dt, true);
     if (this.phase !== 'run') return;
+    this.updatePolice(dt);
+    if (this.phase !== 'run') return;
+    if (hit.mode === 'race') {
+      const lap = Math.min(LAPS, 1 + Math.floor(b.s / LAP_LEN));
+      if (lap > this.lapNow) { this.lapNow = lap; audio.sfx('checkpoint'); this.toast(`LAP ${lap}/${LAPS}`, 'good'); }
+      if (b.s >= LAP_LEN * LAPS) {
+        const pos = this.position();
+        this.racePos = pos;
+        this.score += [4000, 2500, 1500, 800, 400, 200][pos - 1] || 0;
+        this.raceBonus = [500, 300, 180, 100, 50, 25][pos - 1] || 0;
+        this.finish('finished', pos <= 3);
+        return;
+      }
+    }
     this.updateCoins(dt);
     this.recycleSegments();
 
@@ -1085,6 +1302,7 @@ export class Engine {
     if (b.y < 0) { b.y = 0; b.vy = Math.abs(b.vy) > 2 ? -b.vy * 0.4 : 0; if (b.vy === 0) { b.cs.x *= 0.9; b.cs.y *= 0.9; b.cs.z *= 0.9; } }
     b.cr.x += b.cs.x * dt; b.cr.y += b.cs.y * dt; b.cr.z += b.cs.z * dt;
     this.elapsed += dt;
+    this.updateRivals(dt);
     this.updateTraffic(dt, false);
     this.updateCoins(dt);
     this.recycleSegments();
@@ -1175,6 +1393,14 @@ export class Engine {
   }
 
   private placeSun() {
+    if (this.sunLight.castShadow && this.rig) {
+      const bp = this.rig.root.position;
+      const d = this.vis.sunDir;
+      const l = Math.hypot(d[0], d[1], d[2]);
+      this.sunLight.target.position.copy(bp);
+      this.sunLight.position.set(bp.x + (d[0] / l) * 30, bp.y + Math.max(d[1] / l, 0.55) * 30, bp.z + (d[2] / l) * 30);
+      this.sunLight.target.updateMatrixWorld();
+    }
     const d = this.vis.sunDir;
     const r = this.q.draw * 0.85;
     const l = Math.hypot(d[0], d[1], d[2]);
@@ -1191,6 +1417,8 @@ export class Engine {
     else if (c?.mode === 'trial') objective = 'Reach checkpoints to add time';
     else if (c?.mode === 'traffic') objective = 'Overtake traffic, avoid crashes';
     else if (c?.mode === 'free') objective = 'Free ride - no limits';
+    else if (c?.mode === 'police') objective = 'Outrun the police - leave them 170 m behind';
+    else if (c?.mode === 'race') objective = 'Grand Prix: 3 laps - finish on the podium';
     this.events.onHud({
       speed: Math.round(this.bike.v * 3.6),
       maxSpeed: Math.round(this.st.kmh * 1.22),
@@ -1209,6 +1437,13 @@ export class Engine {
       crashed: this.phase === 'crash',
       camera: view,
       respawning: this.respawning,
+      lap: c?.mode === 'race' ? this.lapNow : 0,
+      laps: LAPS,
+      pos: c?.mode === 'race' ? this.position() : 0,
+      field: FIELD,
+      police: this.copN,
+      gap: Math.round(this.copGap),
+      weather: this.weather,
     });
   }
 
@@ -1256,6 +1491,7 @@ export class Engine {
     }
     this.syncBike(dt);
     this.updateCamera(dt);
+    this.updateRain(dt);
     this.updateCoinSpin(dt);
     this.renderer.render(this.scene, this.camera);
   };

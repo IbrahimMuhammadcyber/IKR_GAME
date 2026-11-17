@@ -1,5 +1,5 @@
 import {
-  ACHIEVEMENTS, BIKES, CAREER, CHALLENGES, DEFAULT_SETTINGS, MAX_UPG, UPGRADE_KEYS, bikeById, emptyStats, emptyUpg,
+  PAINTS, paintById, ACHIEVEMENTS, BIKES, CAREER, CHALLENGES, DEFAULT_SETTINGS, MAX_UPG, UPGRADE_KEYS, bikeById, emptyStats, emptyUpg,
   generateDaily, levelFromXp, todayStr, upgradeCost,
   type AchCtx, type DailyItem, type ModeId, type Settings, type Stats, type UpgLevels, type UpgradeKey,
 } from './data';
@@ -22,6 +22,8 @@ export interface Save {
   daily: { date: string; items: DailyItem[] };
   achievements: string[];
   settings: Settings;
+  paints: string[];
+  paint: Record<string, string>;
 }
 
 const KEY = 'nbr3d_save_v1';
@@ -36,11 +38,13 @@ const fresh = (): Save => ({
   upgrades: {},
   career: [],
   challenges: [],
-  scores: { traffic: [], trial: [], free: [], career: [], challenge: [] },
+  scores: { traffic: [], trial: [], free: [], career: [], challenge: [], police: [], race: [] },
   stats: emptyStats(),
   daily: { date: todayStr(), items: generateDaily(todayStr()) },
   achievements: [],
   settings: { ...DEFAULT_SETTINGS },
+  paints: ['stock'],
+  paint: {},
 });
 
 function load(): Save {
@@ -59,6 +63,8 @@ function load(): Save {
       if (!Array.isArray(s.owned) || !s.owned.length) s.owned = [BIKES[0].id];
       if (!s.owned.includes(s.selected)) s.selected = s.owned[0];
       if (!s.daily || !Array.isArray(s.daily.items)) s.daily = base.daily;
+      if (!Array.isArray(s.paints) || !s.paints.includes('stock')) s.paints = ['stock', ...(Array.isArray(s.paints) ? s.paints : [])];
+      if (!s.paint || typeof s.paint !== 'object') s.paint = {};
       return s;
     }
   } catch { /* corrupted or blocked storage: start fresh */ }
@@ -157,6 +163,21 @@ export function buyUpgrade(bikeId: string, key: UpgradeKey): { ok: boolean; reas
   return { ok: true, unlocked };
 }
 
+export function buyPaint(id: string): { ok: boolean; reason?: string } {
+  const s = store.get();
+  const p = PAINTS.find((x) => x.id === id);
+  if (!p) return { ok: false, reason: 'Unknown paint' };
+  if (s.paints.includes(id)) return { ok: true };
+  if (s.coins < p.price) return { ok: false, reason: 'Not enough coins' };
+  store.update((st) => ({ ...st, coins: st.coins - p.price, paints: [...st.paints, id] }));
+  return { ok: true };
+}
+
+export function setPaint(bikeId: string, paintId: string) {
+  store.update((s) => (s.paints.includes(paintId) && s.owned.includes(bikeId) ? { ...s, paint: { ...s.paint, [bikeId]: paintId } } : s));
+}
+export const paintFor = (s: Save, bikeId: string) => paintById(s.paint[bikeId] || 'stock').id;
+
 export function claimDaily(index: number): { ok: boolean; reward: number; unlocked: { name: string; reward: number }[] } {
   const s = store.get();
   const it = s.daily.items[index];
@@ -199,7 +220,7 @@ export function finalizeRace(res: RaceResult, cfg: RaceConfig): RaceSummary {
   let summary!: RaceSummary;
   store.update((st0) => {
     const st = st0;
-    const coinsBonus = coinsBonusFor(res.score);
+    const coinsBonus = coinsBonusFor(res.score) + (res.bonus || 0);
     const xpBase = xpFor(res.score);
     let missionReward = 0;
     let missionXp = 0;
@@ -245,6 +266,8 @@ export function finalizeRace(res: RaceResult, cfg: RaceConfig): RaceSummary {
       nearMisses: st.stats.nearMisses + res.nearMisses,
       coinsCollected: st.stats.coinsCollected + res.coins,
       topSpeed: Math.max(st.stats.topSpeed, res.topSpeed),
+      evades: st.stats.evades + (res.evades || 0),
+      podiums: st.stats.podiums + (res.position && res.position <= 3 ? 1 : 0),
     };
 
     // Daily progress
